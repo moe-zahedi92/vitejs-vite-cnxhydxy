@@ -41,10 +41,10 @@ const todayStr = () => new Date().toISOString().split("T")[0];
 
 // ─── Default seed data ────────────────────────────────────────────────────────
 const SEED_USERS = [
-  { id: "u1", name: "Moe",   role: "admin",     pin: "1234", phone: "0400 000 001", email: "moe@tricore.com.au",   color: "#1a6faf" },
-  { id: "u2", name: "Jake",  role: "tradesman", pin: "2222", phone: "0400 000 002", email: "jake@tricore.com.au",  color: "#27ae60" },
-  { id: "u3", name: "Tyler", role: "tradesman", pin: "3333", phone: "0400 000 003", email: "tyler@tricore.com.au", color: "#8e44ad" },
-  { id: "u4", name: "Sam",   role: "apprentice",pin: "4444", phone: "0400 000 004", email: "sam@tricore.com.au",   color: "#e67e22" },
+  { id: "u1", name: "Moe",   role: "business_owner", pin: "1234", phone: "0400 000 001", email: "moe@tricore.com.au",   color: "#1a6faf", pay_rate: 150, permissions: {} },
+  { id: "u2", name: "Jake",  role: "tradesman",       pin: "2222", phone: "0400 000 002", email: "jake@tricore.com.au",  color: "#27ae60", pay_rate: 150, permissions: {} },
+  { id: "u3", name: "Tyler", role: "tradesman",       pin: "3333", phone: "0400 000 003", email: "tyler@tricore.com.au", color: "#8e44ad", pay_rate: 150, permissions: {} },
+  { id: "u4", name: "Sam",   role: "apprentice",      pin: "4444", phone: "0400 000 004", email: "sam@tricore.com.au",   color: "#e67e22", pay_rate: 80,  permissions: {} },
 ];
 const SEED_DIVISIONS = [
   { id: "d1", name: "Projects" },
@@ -114,8 +114,11 @@ const SC = {
 };
 
 const PC = { high: T.red, medium: T.yellow, low: T.blue };
-const RL = { admin: "Admin", tradesman: "Tradesman", apprentice: "Apprentice", "inventory-manager": "Inventory Manager" };
-const RR = { admin: 150, tradesman: 150, assistant: 110, apprentice: 80, "inventory-manager": 0 };
+const RL = { business_owner: "Business Owner", admin: "Admin", tradesman: "Tradesman", apprentice: "Apprentice", "inventory-manager": "Inventory Manager" };
+const RR = { business_owner: 150, admin: 150, tradesman: 150, assistant: 110, apprentice: 80, "inventory-manager": 0 };
+const isOwner = (u) => u?.role === "business_owner";
+const isAdmin = (u) => u?.role === "admin" || isOwner(u);
+const hasPermission = (u, mod) => isOwner(u) || (u?.permissions?.[mod] === true) || (isAdmin(u) && u?.permissions?.[mod] !== false);
 
 const fmt = n => "$" + Number(n).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = d => { if (!d) return "—"; const [y, m, day] = d.split("-"); return `${day}/${m}/${y}`; };
@@ -1254,40 +1257,63 @@ function StaffView({ appData, setAppData, currentUser }) {
   const [edit, setEdit] = useState(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
+  const [permTab, setPermTab] = useState(false);
   const f = k => v => setForm(p => ({ ...p, [k]: v }));
-  const open = u => { setEdit(u || null); setForm(u || { name: "", role: "tradesman", pin: "", phone: "", email: "", color: "#2980b9" }); setModal(true); };
+  const MODULES = ["dashboard","schedule","jobs","clients","invoices","timesheets","inventory","reports","staff","forms","settings"];
+
+  const open = u => {
+    setEdit(u || null);
+    setForm(u ? { ...u, permissions: u.permissions || {}, pay_rate: u.pay_rate || RR[u.role] || 150 } : { name: "", role: "tradesman", pin: "", phone: "", email: "", color: "#2980b9", pay_rate: 150, permissions: {} });
+    setPermTab(false);
+    setModal(true);
+  };
+
   const save = async () => {
     if (!form.name || !form.pin) return; setSaving(true);
     try {
-      if (!edit) { const nu = { ...form, id: "u" + uid() }; await db.post("users", nu); setAppData(p => ({ ...p, users: [...p.users, nu] })); }
-      else { await db.patch("users", edit.id, form); setAppData(p => ({ ...p, users: p.users.map(u => u.id === edit.id ? { ...form, id: u.id } : u) })); }
+      const payload = { ...form, pay_rate: Number(form.pay_rate), permissions: JSON.stringify(form.permissions || {}) };
+      if (!edit) { const nu = { ...payload, id: "u" + uid() }; await db.post("users", nu); setAppData(p => ({ ...p, users: [...p.users, { ...nu, permissions: form.permissions || {} }] })); }
+      else { await db.patch("users", edit.id, payload); setAppData(p => ({ ...p, users: p.users.map(u => u.id === edit.id ? { ...form, id: u.id, permissions: form.permissions || {} } : u) })); }
       setModal(false);
     } catch (e) { alert("Save failed: " + e.message); }
     setSaving(false);
   };
+
   const del = async () => { await db.del("users", edit.id); setAppData(p => ({ ...p, users: p.users.filter(u => u.id !== edit.id) })); setModal(false); };
+
+  const togglePerm = mod => {
+    const cur = form.permissions?.[mod];
+    const next = cur === true ? false : cur === false ? undefined : true;
+    const perms = { ...form.permissions };
+    if (next === undefined) delete perms[mod]; else perms[mod] = next;
+    setForm(p => ({ ...p, permissions: perms }));
+  };
+
+  const permColor = mod => { const v = form.permissions?.[mod]; if (v === true) return T.green; if (v === false) return T.red; return T.muted; };
+  const permLabel = mod => { const v = form.permissions?.[mod]; if (v === true) return "✓ Granted"; if (v === false) return "✗ Blocked"; return "Default"; };
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 900, letterSpacing: -0.5 }}>Staff</h2>
-        {currentUser.role === "admin" && <Btn onClick={() => open(null)}>+ Add Staff</Btn>}
+        {isAdmin(currentUser) && <Btn onClick={() => open(null)}>+ Add Staff</Btn>}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {appData.users.map(u => {
           const active = appData.jobs.filter(j => (j.assigned_to || []).includes(u.id) && j.status !== "completed");
           const hours = appData.timesheets.filter(t => t.user_id === u.id).reduce((s, t) => { const [ih, im] = (t.clock_in || "0:0").split(":").map(Number), [oh, om] = (t.clock_out || "0:0").split(":").map(Number); return s + Math.max(0, ((oh * 60 + om) - (ih * 60 + im) - Number(t.break_mins || 0)) / 60); }, 0);
+          const rate = u.pay_rate || RR[u.role] || 150;
           return (
-            <Card key={u.id} onClick={() => currentUser.role === "admin" && open(u)}>
+            <Card key={u.id} onClick={() => isAdmin(currentUser) && open(u)}>
               <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
                 <Av name={u.name} size={46} color={u.color} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 800, fontSize: 15 }}>{u.name}</div>
-                  <div style={{ color: T.muted, fontSize: 13, marginTop: 2 }}>{RL[u.role]} · {u.phone || "—"}</div>
+                  <div style={{ color: T.muted, fontSize: 13, marginTop: 2 }}>{RL[u.role] || u.role} · {u.phone || "—"}</div>
                   <div style={{ color: T.dim, fontSize: 12, marginTop: 2 }}>{active.length} active · {hours.toFixed(1)}hrs logged</div>
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ color: T.accent, fontWeight: 800, fontSize: 15 }}>{RR[u.role] ? fmt(RR[u.role]) + "/hr" : "—"}</div>
+                  {isOwner(currentUser) && <div style={{ color: T.accent, fontWeight: 800, fontSize: 15 }}>{fmt(rate)}/hr</div>}
                   <div style={{ fontSize: 11, marginTop: 3, color: u.id === currentUser.id ? T.green : T.dim }}>{u.id === currentUser.id ? "● You" : "● Active"}</div>
                 </div>
               </div>
@@ -1297,13 +1323,38 @@ function StaffView({ appData, setAppData, currentUser }) {
       </div>
       {modal && (
         <Modal title={edit ? "Edit Staff Member" : "Add Staff Member"} onClose={() => setModal(false)}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Inp label="Full Name" value={form.name} onChange={f("name")} required />
-            <Inp label="Role" value={form.role} onChange={f("role")} options={Object.entries(RL).map(([v, label]) => ({ value: v, label }))} />
-            <Inp label="PIN (4 digits)" value={form.pin} onChange={f("pin")} type="password" placeholder="e.g. 1234" />
-            <Inp label="Phone" value={form.phone} onChange={f("phone")} />
+          <div style={{ display: "flex", gap: 0, marginBottom: 18, borderBottom: `1px solid ${T.border}` }}>
+            {["Details", "Permissions"].map(t => (
+              <button key={t} onClick={() => setPermTab(t === "Permissions")} style={{ background: "none", border: "none", borderBottom: (t === "Permissions") === permTab ? `2px solid ${T.accent}` : "2px solid transparent", color: (t === "Permissions") === permTab ? T.accent : T.muted, padding: "8px 14px", cursor: "pointer", fontSize: 13, fontWeight: (t === "Permissions") === permTab ? 700 : 500, fontFamily: "inherit" }}>{t}</button>
+            ))}
           </div>
-          <Inp label="Email" value={form.email} onChange={f("email")} type="email" />
+          {!permTab && (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Inp label="Full Name" value={form.name} onChange={f("name")} required />
+                <Inp label="Role" value={form.role} onChange={f("role")} options={Object.entries(RL).map(([v, label]) => ({ value: v, label }))} />
+                <Inp label="PIN (4 digits)" value={form.pin} onChange={f("pin")} type="password" placeholder="e.g. 1234" />
+                <Inp label="Phone" value={form.phone} onChange={f("phone")} />
+              </div>
+              <Inp label="Email" value={form.email} onChange={f("email")} type="email" />
+              {isOwner(currentUser) && <Inp label="Pay Rate ($/hr)" value={form.pay_rate} onChange={f("pay_rate")} type="number" />}
+            </>
+          )}
+          {permTab && (
+            <div>
+              <div style={{ color: T.muted, fontSize: 12, marginBottom: 16 }}>Override default module access for {form.name || "this staff member"}. Tap to cycle: Default → Granted → Blocked.</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {MODULES.map(mod => (
+                  <div key={mod} onClick={() => togglePerm(mod)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#070707", border: `1px solid ${T.border2}`, borderRadius: 10, padding: "10px 14px", cursor: "pointer" }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = T.accent}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = T.border2}>
+                    <span style={{ fontSize: 13, color: T.text, textTransform: "capitalize", fontWeight: 600 }}>{mod}</span>
+                    <span style={{ fontSize: 12, color: permColor(mod), fontWeight: 700 }}>{permLabel(mod)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <Divider />
           <div style={{ display: "flex", gap: 10 }}>
             <Btn onClick={save} disabled={saving} style={{ flex: 1 }}>{saving ? "Saving..." : edit ? "Save Changes" : "Add Staff Member"}</Btn>
@@ -1474,7 +1525,7 @@ export default function App() {
   if (loading) return <LoadingScreen message={loadMsg} />;
   if (!currentUser) return <LoginScreen users={appData.users} onLogin={u => { setCurrentUser(u); setNav("dashboard"); }} />;
 
-  const navItems = currentUser.role === "admin" ? NAV_ADMIN : currentUser.role === "inventory-manager" ? NAV_INV : NAV_FIELD;
+  const navItems = currentUser.role === "business_owner" || currentUser.role === "admin" ? NAV_ADMIN : currentUser.role === "inventory-manager" ? NAV_INV : NAV_FIELD;
 
   const VIEWS = {
     dashboard: DashboardView, schedule: ScheduleView, jobs: JobsView,
@@ -1512,10 +1563,12 @@ export default function App() {
               <span style={{ fontSize: 16 }}>{item.icon}</span>{item.label}
             </button>
           ))}
-          <div style={{ marginTop: "auto", padding: "14px 18px", borderTop: `1px solid ${T.border}` }}>
-            <div style={{ fontSize: 9, color: T.dim, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>CHARGE RATES</div>
-            <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.9 }}>Tradesman <strong style={{ color: "#777" }}>$150/hr</strong><br />Assistant <strong style={{ color: "#777" }}>$110/hr</strong><br />Apprentice <strong style={{ color: "#777" }}>$80/hr</strong></div>
-          </div>
+          {isOwner(currentUser) && (
+            <div style={{ marginTop: "auto", padding: "14px 18px", borderTop: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: 9, color: T.dim, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>CHARGE RATES</div>
+              <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.9 }}>Tradesman <strong style={{ color: "#777" }}>$150/hr</strong><br />Assistant <strong style={{ color: "#777" }}>$110/hr</strong><br />Apprentice <strong style={{ color: "#777" }}>$80/hr</strong></div>
+            </div>
+          )}
         </div>
 
         {/* Content */}
